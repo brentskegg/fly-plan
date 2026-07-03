@@ -115,6 +115,12 @@
   .layers label{display:flex;align-items:center;gap:8px;padding:3px 0;cursor:pointer}
   .layers input{accent-color:var(--accent)}
   .layers .sw{width:11px;height:11px;border-radius:2px;display:inline-block}
+  .basemap-row{display:flex;gap:6px;margin-bottom:8px}
+  .base-btn{flex:1;background:var(--panel-2);border:1px solid var(--line);color:var(--muted);
+    border-radius:6px;padding:6px;cursor:pointer;font-size:11px;letter-spacing:.5px;
+    text-transform:uppercase;font-weight:600}
+  .base-btn:hover{color:var(--text)}
+  .base-btn.active{background:var(--accent);border-color:var(--accent);color:#1a0f00}
 
   .hoverbox{position:absolute;right:10px;z-index:499;
     background:var(--panel);border:1px solid var(--line);border-radius:8px;
@@ -182,6 +188,11 @@
         <span class="chev" id="layersChev">▾</span>
       </div>
       <div class="layers-body">
+      <div class="basemap-row">
+        <button class="base-btn active" id="baseStreet">Street</button>
+        <button class="base-btn" id="baseSat">Satellite</button>
+      </div>
+      <label id="satLabelsRow" style="display:none"><input type="checkbox" id="toggleSatLabels" checked> <span class="sw" style="background:#95a5a6"></span> Labels &amp; roads</label>
       <label><input type="checkbox" id="toggleAirspace" checked> <span class="sw" style="background:#c0392b"></span> Airspace</label>
       <label><input type="checkbox" id="toggleAirports" checked> <span class="sw" style="background:#2980b9"></span> Airports</label>
       <label><input type="checkbox" id="toggleNavaids"> <span class="sw" style="background:#2ecc71"></span> Navaids (VOR/NDB)</label>
@@ -329,12 +340,30 @@ const map = L.map('map',{zoomControl:true,worldCopyJump:true,doubleClickZoom:fal
 });
 
 const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
-  maxZoom:19, attribution:'© OpenStreetMap contributors'
+  maxZoom:19, referrerPolicy:'no-referrer', attribution:'© OpenStreetMap contributors'
 }).addTo(map);
 
-const topo = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',{
-  maxZoom:17, attribution:'© OpenTopoMap (CC-BY-SA)'
+const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+  maxZoom:19, referrerPolicy:'no-referrer', attribution:'Imagery © Esri, Maxar, Earthstar Geographics'
 });
+
+// optional labels/roads overlay to sit on top of satellite for navigation reference
+const satLabels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',{
+  maxZoom:19, referrerPolicy:'no-referrer', attribution:''
+});
+
+let currentBase='street';
+function setBase(kind){
+  currentBase=kind;
+  if(kind==='satellite'){
+    map.removeLayer(osm);
+    satellite.addTo(map);
+    if(document.getElementById('toggleSatLabels')?.checked) satLabels.addTo(map);
+  } else {
+    map.removeLayer(satellite); map.removeLayer(satLabels);
+    osm.addTo(map);
+  }
+}
 
 /* ---------------------------------------------------------------------------
    Aviation data — fully offline, baked in. No network calls.
@@ -640,6 +669,24 @@ document.getElementById('toggleAirports').onchange = e=>{ showAirports=e.target.
 document.getElementById('toggleNavaids').onchange  = e=>{ showNavaids=e.target.checked; renderNavaids(); };
 document.getElementById('toggleRpp').onchange = e=>{ showRpp=e.target.checked; renderReporting(); };
 document.getElementById('toggleObs').onchange = e=>{ showObs=e.target.checked; renderObstacles(); };
+
+/* base map switcher */
+document.getElementById('baseStreet').onclick=()=>{
+  setBase('street');
+  document.getElementById('baseStreet').classList.add('active');
+  document.getElementById('baseSat').classList.remove('active');
+  document.getElementById('satLabelsRow').style.display='none';
+};
+document.getElementById('baseSat').onclick=()=>{
+  setBase('satellite');
+  document.getElementById('baseSat').classList.add('active');
+  document.getElementById('baseStreet').classList.remove('active');
+  document.getElementById('satLabelsRow').style.display='flex';
+};
+document.getElementById('toggleSatLabels').onchange=e=>{
+  if(currentBase!=='satellite') return;
+  if(e.target.checked){ satLabels.addTo(map); } else { map.removeLayer(satLabels); }
+};
 
 /* startup: draw everything */
 map.whenReady(()=>{
