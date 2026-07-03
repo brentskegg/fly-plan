@@ -214,8 +214,8 @@
     <!-- FLIGHT LOG TAB -->
     <div class="tabpane active" id="tabLog">
       <div class="params">
-        <label>TAS (kt)<input id="tas" type="number" value="100" min="1"></label>
-        <label>Fuel burn (gph)<input id="burn" type="number" value="8" min="0" step="0.1"></label>
+        <label>TAS (kt)<input id="tas" type="number" value="90" min="1"></label>
+        <label>Fuel burn (L/hr)<input id="burn" type="number" value="15" min="0" step="0.1"></label>
         <label>Wind dir (°)<input id="wdir" type="number" value="270" min="0" max="360"></label>
         <label>Wind speed (kt)<input id="wspd" type="number" value="0" min="0"></label>
         <label>Mag var (° E+ / W−)<input id="var" type="number" value="5" step="0.5"></label>
@@ -230,7 +230,7 @@
         <table id="legTable" style="display:none">
           <thead><tr>
             <th>Point</th><th>TT</th><th>WCA</th><th>MH</th>
-            <th>Dist</th><th>Acc</th><th>GS</th><th>ETE</th><th>Acc</th><th>Fuel</th><th></th>
+            <th>km</th><th>Acc</th><th>GS</th><th>ETE</th><th>Acc</th><th>Fuel</th><th></th>
           </tr></thead>
           <tbody id="legBody"></tbody>
         </table>
@@ -289,9 +289,9 @@
     </div>
 
     <div class="totals">
-      <div class="stat"><span class="k">Distance</span><span class="v" id="tDist">0</span><span class="u">nm</span></div>
+      <div class="stat"><span class="k">Distance</span><span class="v" id="tDist">0</span><span class="u">km</span></div>
       <div class="stat"><span class="k">Flight time</span><span class="v" id="tTime">0:00</span><span class="u">h:mm</span></div>
-      <div class="stat"><span class="k">Fuel</span><span class="v" id="tFuel">0</span><span class="u">gal</span></div>
+      <div class="stat"><span class="k">Fuel</span><span class="v" id="tFuel">0</span><span class="u">L</span></div>
       <div class="stat"><span class="k">Legs</span><span class="v" id="tLegs">0</span><span class="u">count</span></div>
     </div>
 
@@ -649,6 +649,7 @@ map.whenReady(()=>{
 
 /* ---------- Geo / navigation math ---------- */
 const R_NM = 3440.065;
+const NM_TO_KM = 1.852;
 const toRad = d=>d*Math.PI/180, toDeg = r=>r*180/Math.PI;
 
 function distNm(a,b){
@@ -829,8 +830,8 @@ function recompute(){
       const fu=time/60*burn;
       accDist+=dd; accTime+=time; totFuel+=fu; legs++;
       tt=Math.round(t)+'°'; wca=(wt.wca>=0?'+':'')+Math.round(wt.wca)+'°';
-      mh=Math.round(wt.mh)+'°'; d=dd.toFixed(1); gs=Math.round(wt.gs);
-      ete=hhmm(time); fuel=fu.toFixed(1); accD=accDist.toFixed(1); accT=hhmm(accTime);
+      mh=Math.round(wt.mh)+'°'; d=(dd*NM_TO_KM).toFixed(1); gs=Math.round(wt.gs);
+      ete=hhmm(time); fuel=fu.toFixed(1); accD=(accDist*NM_TO_KM).toFixed(1); accT=hhmm(accTime);
     }
     const tr=document.createElement('tr'); tr.className='wpt';
     tr.innerHTML=`
@@ -852,7 +853,7 @@ function recompute(){
   });
 
   lastFlightMinutes=accTime;
-  document.getElementById('tDist').textContent=accDist.toFixed(1);
+  document.getElementById('tDist').textContent=(accDist*NM_TO_KM).toFixed(1);
   document.getElementById('tTime').textContent=hhmm(accTime+reserve);
   document.getElementById('tFuel').textContent=(totFuel+reserve/60*burn).toFixed(1);
   document.getElementById('tLegs').textContent=legs;
