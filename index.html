@@ -194,10 +194,10 @@
       </div>
       <div class="layers-body">
       <div class="basemap-row">
-        <button class="base-btn active" id="baseStreet">Street</button>
-        <button class="base-btn" id="baseSat">Satellite</button>
+        <button class="base-btn" id="baseStreet">Street</button>
+        <button class="base-btn active" id="baseSat">Satellite</button>
       </div>
-      <label id="satLabelsRow" style="display:none"><input type="checkbox" id="toggleSatLabels" checked> <span class="sw" style="background:#95a5a6"></span> Labels &amp; roads</label>
+      <label id="satLabelsRow"><input type="checkbox" id="toggleSatLabels" checked> <span class="sw" style="background:#95a5a6"></span> Labels &amp; roads</label>
       <label><input type="checkbox" id="toggleAirspace" checked> <span class="sw" style="background:#c0392b"></span> Airspace</label>
       <label><input type="checkbox" id="toggleAirports" checked> <span class="sw" style="background:#2980b9"></span> Airports</label>
       <label><input type="checkbox" id="toggleNavaids"> <span class="sw" style="background:#2ecc71"></span> Navaids (VOR/NDB)</label>
@@ -390,18 +390,18 @@ const map = L.map('map',{zoomControl:true,worldCopyJump:true,doubleClickZoom:fal
 
 const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
   maxZoom:19, referrerPolicy:'no-referrer', attribution:'© OpenStreetMap contributors'
-}).addTo(map);
+});
 
 const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
   maxZoom:19, referrerPolicy:'no-referrer', attribution:'Imagery © Esri, Maxar, Earthstar Geographics'
-});
+}).addTo(map);
 
 // optional labels/roads overlay to sit on top of satellite for navigation reference
 const satLabels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',{
   maxZoom:19, referrerPolicy:'no-referrer', attribution:''
-});
+}).addTo(map);
 
-let currentBase='street';
+let currentBase='satellite';
 function setBase(kind){
   currentBase=kind;
   if(kind==='satellite'){
@@ -460,7 +460,7 @@ function renderAirports(){
   airportLayer.clearLayers();
   if(!showAirports) return 0;
   const z=map.getZoom();
-  const minSize = z>=9 ? 0 : (z>=7 ? 1 : 2);
+  const minSize = 0; // show all airports at every zoom level
   const b=map.getBounds(), s=b.getSouth(), n=b.getNorth(), w=b.getWest(), e=b.getEast();
   let count=0;
   for(const a of AIRPORTS){
