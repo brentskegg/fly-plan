@@ -166,6 +166,10 @@
   .vfr-handle{width:22px;height:22px;border-radius:50%;background:var(--accent);color:#1a0f00;
     border:2px solid #fff;display:flex;align-items:center;justify-content:center;
     font-family:var(--mono);font-weight:800;font-size:9px;cursor:move;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  .vfr-cp{width:20px;height:20px;border-radius:50%;background:#e84393;color:#fff;
+    border:2px solid #fff;display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-weight:800;font-size:9px;cursor:move;box-shadow:0 2px 8px rgba(0,0,0,.5)}
+  .vfr-warp-canvas{z-index:200}
 
   ::-webkit-scrollbar{width:9px;height:9px}
   ::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px}
@@ -209,9 +213,13 @@
       <label><input type="checkbox" id="toggleVfr"> <span class="sw" style="background:#9b59b6"></span> VFR chart (LFV)</label>
       <div id="vfrOpacityRow" style="display:none;padding:2px 0 4px 19px">
         <input type="range" id="vfrOpacity" min="0" max="100" value="70" style="width:100%;accent-color:var(--accent)">
-        <label style="flex-direction:row;gap:6px;margin-top:4px"><input type="checkbox" id="vfrAdjustChk"> Adjust corners</label>
-        <div id="vfrReadout" style="font-family:var(--mono);font-size:9px;color:var(--muted);
-          margin-top:4px;word-break:break-all;cursor:pointer" title="Click to copy"></div>
+        <label style="flex-direction:row;gap:6px;margin-top:6px"><input type="checkbox" id="vfrAdjustChk"> Show/edit control points</label>
+        <div style="display:flex;gap:6px;margin-top:6px">
+          <button id="vfrAddCP" style="flex:1;background:var(--accent);border:1px solid var(--accent);color:#1a0f00;border-radius:6px;padding:5px;cursor:pointer;font-size:10px;font-weight:600">＋ Add point</button>
+          <button id="vfrResetCP" style="flex:1;background:var(--panel-2);border:1px solid var(--line);color:var(--muted);border-radius:6px;padding:5px;cursor:pointer;font-size:10px">Reset</button>
+        </div>
+        <div id="vfrReadout" style="font-family:var(--mono);font-size:9px;color:var(--muted);margin-top:5px"></div>
+        <div id="vfrPickHint" style="display:none;font-size:10px;color:var(--accent-2);margin-top:5px;line-height:1.3">Now click the matching spot on the map.</div>
       </div>
       <div id="dataStatus" style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px;
         font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.5;
@@ -424,79 +432,308 @@ function setBase(kind){
   }
 }
 
-/* ---- LFV VFR chart overlay (white made transparent) ---- */
+/* ---- LFV VFR chart overlay with control-point (rubber-sheet) warp ---- */
 const VFR_URL='https://aro.lfv.se/tor/vfrkarta.gif?t='+Date.now();
-let vfrBounds=[[54.260548,4.883374],[70.106178,29.698877]]; // [[S,W],[N,E]] — adjustable
-let vfrOverlay=null, vfrLoading=false, vfrLoadError=false;
-let vfrSWHandle=null, vfrNEHandle=null, vfrAdjust=false;
 
-function makeVfrTransparent(img){
-  // draw the GIF to a canvas and knock out white/near-white pixels
+// Fallback rectangle bounds (used only before any control points exist)
+let vfrBounds=[[54.260548,4.883374],[70.106178,29.698877]]; // [[S,W],[N,E]]
+
+// Control points: each { x, y (image pixels), lat, lng }
+// Saved to localStorage so they persist. Pre-seed with the two corners.
+let vfrCPs=[];
+let vfrImg=null;          // processed source image (white->transparent) as an Image
+let vfrSrcCanvas=null;    // offscreen canvas holding source pixels
+let vfrLayer=null;        // L.Layer drawing the warped image
+let vfrLoading=false, vfrAdjust=false;
+let vfrPickState=null;    // when adding a point: {stage:'map', x, y}
+
+function vfrSaveCPs(){ try{ localStorage.setItem('flyplan_vfr_cps', JSON.stringify(vfrCPs)); }catch(e){} }
+function vfrLoadCPs(){
+  try{ const s=JSON.parse(localStorage.getItem('flyplan_vfr_cps')||'null'); if(Array.isArray(s)) vfrCPs=s; }catch(e){}
+}
+
+/* white -> transparent, returns {canvas,width,height} or null if CORS-tainted */
+function makeVfrCanvas(img){
   const c=document.createElement('canvas');
   c.width=img.naturalWidth; c.height=img.naturalHeight;
   const ctx=c.getContext('2d');
   ctx.drawImage(img,0,0);
-  let data;
-  try{ data=ctx.getImageData(0,0,c.width,c.height); }
-  catch(e){ return null; } // tainted canvas (CORS) — cannot process
-  const d=data.data, TH=235; // treat >=235 on all channels as background white
-  for(let i=0;i<d.length;i+=4){
-    if(d[i]>=TH && d[i+1]>=TH && d[i+2]>=TH) d[i+3]=0;
-  }
-  ctx.putImageData(data,0,0);
-  return c.toDataURL('image/png');
+  try{
+    const data=ctx.getImageData(0,0,c.width,c.height);
+    const d=data.data, TH=235;
+    for(let i=0;i<d.length;i+=4){ if(d[i]>=TH&&d[i+1]>=TH&&d[i+2]>=TH) d[i+3]=0; }
+    ctx.putImageData(data,0,0);
+  }catch(e){ /* tainted: leave as-is, white stays opaque */ }
+  return c;
 }
 
-function loadVfr(){
-  if(vfrOverlay || vfrLoading) return;
+/* ---------- minimal Delaunay triangulation (Bowyer-Watson) ---------- */
+function triangulate(points){
+  // points: [{x,y}] in an arbitrary planar space (we use lng,lat)
+  const n=points.length;
+  if(n<3) return [];
+  // super-triangle
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for(const p of points){ minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y); }
+  const dx=(maxX-minX)||1, dy=(maxY-minY)||1, dmax=Math.max(dx,dy);
+  const midx=(minX+maxX)/2, midy=(minY+maxY)/2;
+  const st=[{x:midx-20*dmax,y:midy-dmax},{x:midx,y:midy+20*dmax},{x:midx+20*dmax,y:midy-dmax}];
+  const verts=points.concat(st);
+  const si=n, sj=n+1, sk=n+2;
+  let tris=[[si,sj,sk]];
+  function circum(ax,ay,bx,by,cx,cy){
+    const A=bx-ax,B=by-ay,C=cx-ax,D=cy-ay;
+    const E=A*(ax+bx)+B*(ay+by), F=C*(ax+cx)+D*(ay+cy);
+    const G=2*(A*(cy-by)-B*(cx-bx));
+    if(Math.abs(G)<1e-12){ return {x:0,y:0,r2:Infinity}; }
+    const ux=(D*E-B*F)/G, uy=(A*F-C*E)/G;
+    const r2=(ax-ux)**2+(ay-uy)**2;
+    return {x:ux,y:uy,r2};
+  }
+  for(let ip=0;ip<n;ip++){
+    const p=verts[ip];
+    const bad=[];
+    for(const t of tris){
+      const a=verts[t[0]],b=verts[t[1]],c=verts[t[2]];
+      const cc=circum(a.x,a.y,b.x,b.y,c.x,c.y);
+      if((p.x-cc.x)**2+(p.y-cc.y)**2 <= cc.r2) bad.push(t);
+    }
+    // boundary edges of the bad triangles' polygon hole
+    const edges=[];
+    for(const t of bad){
+      const es=[[t[0],t[1]],[t[1],t[2]],[t[2],t[0]]];
+      for(const e of es){
+        let shared=false;
+        for(const t2 of bad){ if(t2===t) continue;
+          const has=(a,b)=>((t2[0]===a||t2[1]===a||t2[2]===a)&&(t2[0]===b||t2[1]===b||t2[2]===b));
+          if(has(e[0],e[1])){ shared=true; break; }
+        }
+        if(!shared) edges.push(e);
+      }
+    }
+    tris=tris.filter(t=>!bad.includes(t));
+    for(const e of edges) tris.push([e[0],e[1],ip]);
+  }
+  // drop triangles touching super-triangle
+  return tris.filter(t=>t[0]<n&&t[1]<n&&t[2]<n);
+}
+
+/* affine transform mapping source triangle (s0,s1,s2) to dest (d0,d1,d2),
+   used to draw a warped triangular slice via canvas clip + setTransform */
+function drawTriangle(ctx, img, s0,s1,s2, d0,d1,d2){
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(d0.x,d0.y); ctx.lineTo(d1.x,d1.y); ctx.lineTo(d2.x,d2.y); ctx.closePath();
+  ctx.clip();
+  // solve affine: dest = M * src
+  const denom = s0.x*(s2.y-s1.y) - s1.x*s2.y + s2.x*s1.y + (s1.x-s2.x)*s0.y;
+  if(Math.abs(denom)<1e-9){ ctx.restore(); return; }
+  const m11 = -(s0.y*(d2.x-d1.x) - s1.y*d2.x + s2.y*d1.x + (s1.y-s2.y)*d0.x)/denom;
+  const m12 =  (s1.y*d2.y + s0.y*(d1.y-d2.y) - s2.y*d1.y + (s2.y-s1.y)*d0.y)/denom;
+  const m21 =  (s0.x*(d2.x-d1.x) - s1.x*d2.x + s2.x*d1.x + (s1.x-s2.x)*d0.x)/denom;
+  const m22 = -(s1.x*d2.y + s0.x*(d1.y-d2.y) - s2.x*d1.y + (s2.x-s1.x)*d0.y)/denom;
+  const dx  =  (s0.x*(s2.y*d1.x - s1.y*d2.x) + s0.y*(s1.x*d2.x - s2.x*d1.x) + (s2.x*s1.y - s1.x*s2.y)*d0.x)/denom;
+  const dy  =  (s0.x*(s2.y*d1.y - s1.y*d2.y) + s0.y*(s1.x*d2.y - s2.x*d1.y) + (s2.x*s1.y - s1.x*s2.y)*d0.y)/denom;
+  ctx.setTransform(m11,m12,m21,m22,dx,dy);
+  ctx.drawImage(img,0,0);
+  ctx.restore();
+}
+
+/* ---------- custom Leaflet layer that draws the warped image ---------- */
+const VfrWarpLayer = L.Layer.extend({
+  onAdd:function(map){
+    this._map=map;
+    this._canvas=L.DomUtil.create('canvas','vfr-warp-canvas');
+    this._canvas.style.position='absolute';
+    this._canvas.style.pointerEvents='none';
+    this.getPane().appendChild(this._canvas);
+    map.on('moveend zoomend resize viewreset zoom move',this._reset,this);
+    this._reset();
+    return this;
+  },
+  onRemove:function(map){
+    L.DomUtil.remove(this._canvas);
+    map.off('moveend zoomend resize viewreset zoom move',this._reset,this);
+  },
+  setOpacity:function(o){ this._opacity=o; if(this._canvas) this._canvas.style.opacity=o; },
+  redraw:function(){ this._reset(); return this; },
+  _reset:function(){
+    const map=this._map; if(!map||!vfrSrcCanvas) return;
+    const size=map.getSize();
+    const topLeft=map.containerPointToLayerPoint([0,0]);
+    L.DomUtil.setPosition(this._canvas,topLeft);
+    const cv=this._canvas;
+    cv.width=size.x; cv.height=size.y;
+    cv.style.width=size.x+'px'; cv.style.height=size.y+'px';
+    if(this._opacity!=null) cv.style.opacity=this._opacity;
+    const ctx=cv.getContext('2d');
+    ctx.clearRect(0,0,cv.width,cv.height);
+
+    if(vfrCPs.length<3){
+      // not enough points to warp — draw as simple rectangle via image bounds
+      const b=L.latLngBounds(vfrBounds);
+      const tl=map.latLngToContainerPoint(b.getNorthWest());
+      const br=map.latLngToContainerPoint(b.getSouthEast());
+      ctx.drawImage(vfrSrcCanvas, tl.x, tl.y, br.x-tl.x, br.y-tl.y);
+      return;
+    }
+
+    // dest points = control points projected to current screen (container) coords
+    const dest=vfrCPs.map(cp=>{
+      const pt=map.latLngToContainerPoint([cp.lat,cp.lng]);
+      return {x:pt.x,y:pt.y};
+    });
+    // triangulate in geographic space (lng,lat) for stable topology
+    const geo=vfrCPs.map(cp=>({x:cp.lng,y:cp.lat}));
+    const tris=triangulate(geo);
+    for(const t of tris){
+      const s0=vfrCPs[t[0]], s1=vfrCPs[t[1]], s2=vfrCPs[t[2]];
+      drawTriangle(ctx, vfrSrcCanvas,
+        {x:s0.x,y:s0.y},{x:s1.x,y:s1.y},{x:s2.x,y:s2.y},
+        dest[t[0]],dest[t[1]],dest[t[2]]);
+    }
+  }
+});
+
+function loadVfr(cb){
+  if(vfrImg){ if(cb)cb(); return; }
+  if(vfrLoading) return;
   vfrLoading=true;
   const img=new Image();
   img.crossOrigin='anonymous';
-  const finish=(src)=>{
+  img.onload=()=>{
     vfrLoading=false;
-    const opacity=(+document.getElementById('vfrOpacity').value)/100;
-    vfrOverlay=L.imageOverlay(src, vfrBounds, {opacity, interactive:false});
-    if(document.getElementById('toggleVfr').checked) vfrOverlay.addTo(map);
-    if(vfrAdjust) showVfrHandles();
+    vfrImg=img;
+    vfrSrcCanvas=makeVfrCanvas(img);
+    // seed default corner control points if none saved
+    if(vfrCPs.length===0){
+      const W=vfrSrcCanvas.width, H=vfrSrcCanvas.height;
+      vfrCPs=[
+        {x:0,   y:H,   lat:vfrBounds[0][0], lng:vfrBounds[0][1]}, // SW = bottom-left
+        {x:W,   y:0,   lat:vfrBounds[1][0], lng:vfrBounds[1][1]}, // NE = top-right
+        {x:0,   y:0,   lat:vfrBounds[1][0], lng:vfrBounds[0][1]}, // NW = top-left
+        {x:W,   y:H,   lat:vfrBounds[0][0], lng:vfrBounds[1][1]}  // SE = bottom-right
+      ];
+      vfrSaveCPs();
+    }
+    if(cb) cb();
   };
-  img.onload=()=>{ finish(makeVfrTransparent(img)||VFR_URL); };
-  img.onerror=()=>{ vfrLoadError=true; finish(VFR_URL); };
+  img.onerror=()=>{ vfrLoading=false; if(cb) cb(); };
   img.src=VFR_URL;
 }
 
-/* ---- manual corner adjustment ---- */
-function cornerIcon(label){
-  return L.divIcon({className:'',
-    html:`<div class="vfr-handle">${label}</div>`, iconSize:[22,22], iconAnchor:[11,11]});
+/* ---------- control-point editing ---------- */
+let vfrCPMarkers=[];      // map markers for each CP (draggable)
+let vfrImgModal=null;     // the image-picker modal element
+
+function vfrShowLayer(){
+  if(!vfrLayer) vfrLayer=new VfrWarpLayer();
+  const op=(+document.getElementById('vfrOpacity').value)/100;
+  vfrLayer.setOpacity(op);
+  vfrLayer.addTo(map);
 }
-function applyVfrBounds(){
-  if(vfrOverlay) vfrOverlay.setBounds(L.latLngBounds(vfrBounds));
-  updateVfrReadout();
+function vfrHideLayer(){ if(vfrLayer) map.removeLayer(vfrLayer); }
+
+function vfrRefresh(){ if(vfrLayer) vfrLayer.redraw(); }
+
+function vfrCpIcon(i){
+  return L.divIcon({className:'',html:`<div class="vfr-cp">${i+1}</div>`,iconSize:[20,20],iconAnchor:[10,10]});
 }
 function showVfrHandles(){
-  const sw=vfrBounds[0], ne=vfrBounds[1];
-  if(!vfrSWHandle){
-    vfrSWHandle=L.marker([sw[0],sw[1]],{icon:cornerIcon('SW'),draggable:true,zIndexOffset:1000});
-    vfrSWHandle.on('drag',ev=>{ const p=ev.target.getLatLng(); vfrBounds[0]=[p.lat,p.lng]; applyVfrBounds(); });
-    vfrNEHandle=L.marker([ne[0],ne[1]],{icon:cornerIcon('NE'),draggable:true,zIndexOffset:1000});
-    vfrNEHandle.on('drag',ev=>{ const p=ev.target.getLatLng(); vfrBounds[1]=[p.lat,p.lng]; applyVfrBounds(); });
-  } else {
-    vfrSWHandle.setLatLng([sw[0],sw[1]]);
-    vfrNEHandle.setLatLng([ne[0],ne[1]]);
+  hideVfrHandles();
+  vfrCPMarkers=vfrCPs.map((cp,i)=>{
+    const m=L.marker([cp.lat,cp.lng],{icon:vfrCpIcon(i),draggable:true,zIndexOffset:1000}).addTo(map);
+    m.on('drag',ev=>{ const p=ev.target.getLatLng(); cp.lat=p.lat; cp.lng=p.lng; vfrRefresh(); });
+    m.on('dragend',()=>{ vfrSaveCPs(); updateVfrReadout(); });
+    m.on('dblclick',ev=>{ L.DomEvent.stop(ev); vfrDeleteCP(i); });
+    return m;
+  });
+}
+function hideVfrHandles(){ vfrCPMarkers.forEach(m=>map.removeLayer(m)); vfrCPMarkers=[]; }
+
+function vfrDeleteCP(i){
+  if(vfrCPs.length<=3){ alert('Need at least 3 control points to warp. Delete disabled.'); return; }
+  vfrCPs.splice(i,1); vfrSaveCPs();
+  showVfrHandles(); vfrRefresh(); updateVfrReadout();
+}
+
+/* Add a control point: open image picker; user clicks the chart location,
+   then clicks the matching spot on the map. */
+function vfrStartAddCP(){
+  if(!vfrSrcCanvas){ alert('Turn the VFR chart on first so it can load.'); return; }
+  vfrOpenImagePicker((imgX,imgY)=>{
+    // now wait for a map click
+    document.getElementById('vfrPickHint').style.display='block';
+    map.getContainer().style.cursor='crosshair';
+    const onClick=(e)=>{
+      map.off('click',onClick);
+      map.getContainer().style.cursor='';
+      document.getElementById('vfrPickHint').style.display='none';
+      vfrCPs.push({x:imgX,y:imgY,lat:e.latlng.lat,lng:e.latlng.lng});
+      vfrSaveCPs(); showVfrHandles(); vfrRefresh(); updateVfrReadout();
+    };
+    map.on('click',onClick);
+  });
+}
+
+/* image picker modal: shows the chart; user clicks a recognizable point */
+function vfrOpenImagePicker(cb){
+  if(!vfrImgModal){
+    vfrImgModal=document.createElement('div');
+    vfrImgModal.className='modal';
+    vfrImgModal.innerHTML=`<div class="modal-box" style="max-width:90vw;width:auto">
+      <div class="modal-h">Click the point on the chart</div>
+      <div style="overflow:auto;max-height:70vh;border:1px solid var(--line);border-radius:6px">
+        <canvas id="vfrPickCanvas" style="display:block;cursor:crosshair"></canvas>
+      </div>
+      <div class="modal-note">Click a recognizable feature (airport, coastline point). Then you'll click the same spot on the map.</div>
+      <div class="modal-actions"><button class="btn" id="vfrPickCancel">Cancel</button></div>
+    </div>`;
+    document.body.appendChild(vfrImgModal);
   }
-  vfrSWHandle.addTo(map); vfrNEHandle.addTo(map);
-  updateVfrReadout();
+  vfrImgModal.style.display='flex';
+  const cv=vfrImgModal.querySelector('#vfrPickCanvas');
+  // scale the chart down to fit
+  const maxW=Math.min(window.innerWidth*0.85, vfrSrcCanvas.width);
+  const scale=maxW/vfrSrcCanvas.width;
+  cv.width=vfrSrcCanvas.width*scale; cv.height=vfrSrcCanvas.height*scale;
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='#0a1622'; ctx.fillRect(0,0,cv.width,cv.height);
+  ctx.drawImage(vfrSrcCanvas,0,0,cv.width,cv.height);
+  const onPick=(ev)=>{
+    const r=cv.getBoundingClientRect();
+    const x=(ev.clientX-r.left)/scale, y=(ev.clientY-r.top)/scale;
+    cv.removeEventListener('click',onPick);
+    vfrImgModal.style.display='none';
+    cb(x,y);
+  };
+  cv.addEventListener('click',onPick);
+  vfrImgModal.querySelector('#vfrPickCancel').onclick=()=>{
+    cv.removeEventListener('click',onPick); vfrImgModal.style.display='none';
+  };
 }
-function hideVfrHandles(){
-  if(vfrSWHandle) map.removeLayer(vfrSWHandle);
-  if(vfrNEHandle) map.removeLayer(vfrNEHandle);
-}
+
 function updateVfrReadout(){
   const el=document.getElementById('vfrReadout');
   if(!el) return;
-  const b=vfrBounds;
-  el.textContent=`[[${b[0][0].toFixed(6)},${b[0][1].toFixed(6)}],[${b[1][0].toFixed(6)},${b[1][1].toFixed(6)}]]`;
+  el.textContent=vfrCPs.length+' control points';
 }
+function vfrResetCPs(){
+  if(!confirm('Reset all control points to the default corners?')) return;
+  vfrCPs=[]; localStorage.removeItem('flyplan_vfr_cps');
+  if(vfrSrcCanvas){
+    const W=vfrSrcCanvas.width,H=vfrSrcCanvas.height;
+    vfrCPs=[
+      {x:0,y:H,lat:vfrBounds[0][0],lng:vfrBounds[0][1]},
+      {x:W,y:0,lat:vfrBounds[1][0],lng:vfrBounds[1][1]},
+      {x:0,y:0,lat:vfrBounds[1][0],lng:vfrBounds[0][1]},
+      {x:W,y:H,lat:vfrBounds[0][0],lng:vfrBounds[1][1]}
+    ];
+    vfrSaveCPs();
+  }
+  showVfrHandles(); vfrRefresh(); updateVfrReadout();
+}
+vfrLoadCPs();
 
 /* ---------------------------------------------------------------------------
    Aviation data — fully offline, baked in. No network calls.
@@ -805,24 +1042,20 @@ document.getElementById('toggleObs').onchange = e=>{ showObs=e.target.checked; r
 document.getElementById('toggleVfr').onchange = e=>{
   document.getElementById('vfrOpacityRow').style.display = e.target.checked ? 'block' : 'none';
   if(e.target.checked){
-    if(vfrOverlay) vfrOverlay.addTo(map); else loadVfr();
-    if(vfrAdjust) showVfrHandles();
+    loadVfr(()=>{ vfrShowLayer(); vfrRefresh(); if(vfrAdjust) showVfrHandles(); updateVfrReadout(); });
   } else {
-    if(vfrOverlay) map.removeLayer(vfrOverlay);
-    hideVfrHandles();
+    vfrHideLayer(); hideVfrHandles();
   }
 };
 document.getElementById('vfrOpacity').oninput = e=>{
-  if(vfrOverlay) vfrOverlay.setOpacity((+e.target.value)/100);
+  if(vfrLayer) vfrLayer.setOpacity((+e.target.value)/100);
 };
 document.getElementById('vfrAdjustChk').onchange = e=>{
   vfrAdjust=e.target.checked;
   if(vfrAdjust){ showVfrHandles(); } else { hideVfrHandles(); }
 };
-document.getElementById('vfrReadout').onclick = async e=>{
-  try{ await navigator.clipboard.writeText(e.target.textContent); e.target.style.color='var(--good)';
-    setTimeout(()=>e.target.style.color='var(--muted)',800); }catch(err){}
-};
+document.getElementById('vfrAddCP').onclick = ()=>vfrStartAddCP();
+document.getElementById('vfrResetCP').onclick = ()=>vfrResetCPs();
 
 /* base map switcher */
 document.getElementById('baseStreet').onclick=()=>{
