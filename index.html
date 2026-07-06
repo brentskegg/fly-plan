@@ -598,10 +598,16 @@ const VfrWarpLayer = L.Layer.extend({
   }
 });
 
-// Optional CORS proxy — needed because LFV doesn't send CORS headers, so the
-// browser taints the canvas and neither the warp nor white-transparency can run.
-// corsproxy.io refetches the image WITH cors headers. Toggle in the UI.
-function vfrProxied(url){ return 'https://corsproxy.io/?url='+encodeURIComponent(url); }
+// Optional CORS proxy — LFV sends no CORS headers, so the browser taints the
+// canvas and the warp/transparency can't read pixels. These proxies refetch the
+// image server-side and return it WITH cors headers. corsproxy.io was dropped:
+// its free tier is localhost-only and blocks image content types.
+const VFR_PROXIES=[
+  u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),
+  u=>'https://api.codetabs.com/v1/proxy/?quest='+encodeURIComponent(u)
+];
+let vfrProxyIdx=0;
+function vfrProxied(url){ return VFR_PROXIES[vfrProxyIdx](url); }
 
 let vfrRawOverlay=null; // fallback plain overlay when canvas is unusable
 
@@ -644,10 +650,20 @@ function loadVfr(cb){
   };
   img.onerror=()=>{
     vfrLoading=false;
+    if(useProxy && vfrProxyIdx < VFR_PROXIES.length-1){
+      // this proxy failed — try the next one
+      vfrProxyIdx++;
+      loadVfr(cb);
+      return;
+    }
     if(useProxy){
-      // proxy failed — last resort: plain non-CORS image, un-warped
+      // all proxies failed — last resort: plain non-CORS image, un-warped
+      vfrProxyIdx=0;
       const im2=new Image();
-      im2.onload=()=>{ vfrImg=im2; vfrSrcCanvas=null; showRawVfr(); if(cb)cb(); };
+      im2.onload=()=>{ vfrImg=im2; vfrSrcCanvas=null; showRawVfr();
+        const s=document.getElementById('vfrReadout');
+        if(s) s.innerHTML='<span style="color:#ff5a5a">Proxies unavailable — chart shown un-warped.</span>';
+        if(cb)cb(); };
       im2.onerror=()=>{ if(cb)cb(); };
       im2.src=VFR_URL;
     } else if(cb){ cb(); }
@@ -1099,6 +1115,7 @@ document.getElementById('vfrOpacity').oninput = e=>{
   if(vfrRawOverlay) vfrRawOverlay.setOpacity(op);
 };
 document.getElementById('vfrProxyChk').onchange = ()=>{
+  vfrProxyIdx=0;
   // force a fresh reload through/without the proxy
   vfrImg=null; vfrSrcCanvas=null;
   if(vfrRawOverlay){ map.removeLayer(vfrRawOverlay); vfrRawOverlay=null; }
