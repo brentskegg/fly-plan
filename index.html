@@ -203,6 +203,10 @@
       <label><input type="checkbox" id="toggleNavaids"> <span class="sw" style="background:#2ecc71"></span> Navaids (VOR/NDB)</label>
       <label><input type="checkbox" id="toggleRpp" checked> <span class="sw" style="background:#e84393"></span> Reporting points</label>
       <label><input type="checkbox" id="toggleObs" checked> <span class="sw" style="background:#e67e22"></span> Obstacles</label>
+      <label><input type="checkbox" id="toggleVfr"> <span class="sw" style="background:#9b59b6"></span> VFR chart (LFV)</label>
+      <div id="vfrOpacityRow" style="display:none;padding:2px 0 4px 19px">
+        <input type="range" id="vfrOpacity" min="0" max="100" value="70" style="width:100%;accent-color:var(--accent)">
+      </div>
       <div id="dataStatus" style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px;
         font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.5;
         word-break:break-word">Loading…</div>
@@ -412,6 +416,55 @@ function setBase(kind){
     map.removeLayer(satellite); map.removeLayer(satLabels);
     osm.addTo(map);
   }
+}
+
+/* ---- LFV VFR chart overlay (white made transparent) ---- */
+const VFR_URL='https://aro.lfv.se/tor/vfrkarta.gif';
+const VFR_BOUNDS=[[55.460209,4.883374],[70.106178,29.698877]]; // [[S,W],[N,E]]
+let vfrOverlay=null, vfrLoading=false, vfrLoadError=false;
+
+function makeVfrTransparent(img){
+  // draw the GIF to a canvas and knock out white/near-white pixels
+  const c=document.createElement('canvas');
+  c.width=img.naturalWidth; c.height=img.naturalHeight;
+  const ctx=c.getContext('2d');
+  ctx.drawImage(img,0,0);
+  let data;
+  try{ data=ctx.getImageData(0,0,c.width,c.height); }
+  catch(e){ return null; } // tainted canvas (CORS) — cannot process
+  const d=data.data, TH=235; // treat >=235 on all channels as background white
+  for(let i=0;i<d.length;i+=4){
+    if(d[i]>=TH && d[i+1]>=TH && d[i+2]>=TH) d[i+3]=0;
+  }
+  ctx.putImageData(data,0,0);
+  return c.toDataURL('image/png');
+}
+
+function loadVfr(){
+  if(vfrOverlay || vfrLoading) return;
+  vfrLoading=true;
+  const img=new Image();
+  img.crossOrigin='anonymous';
+  img.onload=()=>{
+    vfrLoading=false;
+    const url=makeVfrTransparent(img);
+    const opacity=(+document.getElementById('vfrOpacity').value)/100;
+    if(url){
+      vfrOverlay=L.imageOverlay(url, VFR_BOUNDS, {opacity, interactive:false});
+    } else {
+      // CORS blocked pixel access — fall back to the raw GIF (white stays opaque)
+      vfrOverlay=L.imageOverlay(VFR_URL, VFR_BOUNDS, {opacity, interactive:false});
+    }
+    if(document.getElementById('toggleVfr').checked) vfrOverlay.addTo(map);
+  };
+  img.onerror=()=>{
+    vfrLoading=false; vfrLoadError=true;
+    // last-resort: overlay the GIF directly by URL (no transparency)
+    const opacity=(+document.getElementById('vfrOpacity').value)/100;
+    vfrOverlay=L.imageOverlay(VFR_URL, VFR_BOUNDS, {opacity, interactive:false});
+    if(document.getElementById('toggleVfr').checked) vfrOverlay.addTo(map);
+  };
+  img.src=VFR_URL;
 }
 
 /* ---------------------------------------------------------------------------
@@ -718,6 +771,17 @@ document.getElementById('toggleAirports').onchange = e=>{ showAirports=e.target.
 document.getElementById('toggleNavaids').onchange  = e=>{ showNavaids=e.target.checked; renderNavaids(); };
 document.getElementById('toggleRpp').onchange = e=>{ showRpp=e.target.checked; renderReporting(); };
 document.getElementById('toggleObs').onchange = e=>{ showObs=e.target.checked; renderObstacles(); };
+document.getElementById('toggleVfr').onchange = e=>{
+  document.getElementById('vfrOpacityRow').style.display = e.target.checked ? 'block' : 'none';
+  if(e.target.checked){
+    if(vfrOverlay) vfrOverlay.addTo(map); else loadVfr();
+  } else {
+    if(vfrOverlay) map.removeLayer(vfrOverlay);
+  }
+};
+document.getElementById('vfrOpacity').oninput = e=>{
+  if(vfrOverlay) vfrOverlay.setOpacity((+e.target.value)/100);
+};
 
 /* base map switcher */
 document.getElementById('baseStreet').onclick=()=>{
