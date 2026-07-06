@@ -163,6 +163,9 @@
   .nav-icon{font-size:15px;text-shadow:0 1px 3px rgba(0,0,0,.9);font-weight:700}
   .rpp-icon{font-size:13px;text-shadow:0 1px 3px rgba(0,0,0,.9);font-weight:700}
   .obs-icon{font-size:12px;text-shadow:0 1px 2px rgba(0,0,0,.9);font-weight:700}
+  .vfr-handle{width:22px;height:22px;border-radius:50%;background:var(--accent);color:#1a0f00;
+    border:2px solid #fff;display:flex;align-items:center;justify-content:center;
+    font-family:var(--mono);font-weight:800;font-size:9px;cursor:move;box-shadow:0 2px 8px rgba(0,0,0,.5)}
 
   ::-webkit-scrollbar{width:9px;height:9px}
   ::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px}
@@ -206,6 +209,9 @@
       <label><input type="checkbox" id="toggleVfr"> <span class="sw" style="background:#9b59b6"></span> VFR chart (LFV)</label>
       <div id="vfrOpacityRow" style="display:none;padding:2px 0 4px 19px">
         <input type="range" id="vfrOpacity" min="0" max="100" value="70" style="width:100%;accent-color:var(--accent)">
+        <label style="flex-direction:row;gap:6px;margin-top:4px"><input type="checkbox" id="vfrAdjustChk"> Adjust corners</label>
+        <div id="vfrReadout" style="font-family:var(--mono);font-size:9px;color:var(--muted);
+          margin-top:4px;word-break:break-all;cursor:pointer" title="Click to copy"></div>
       </div>
       <div id="dataStatus" style="border-top:1px solid var(--line);margin-top:8px;padding-top:8px;
         font-family:var(--mono);font-size:10px;color:var(--muted);line-height:1.5;
@@ -419,9 +425,10 @@ function setBase(kind){
 }
 
 /* ---- LFV VFR chart overlay (white made transparent) ---- */
-const VFR_URL='https://aro.lfv.se/tor/vfrkarta.gif?216901';
-const VFR_BOUNDS=[[54.260548,4.883374],[70.106178,29.698877]]; // [[S,W],[N,E]]
+const VFR_URL='https://aro.lfv.se/tor/vfrkarta.gif?t='+Date.now();
+let vfrBounds=[[54.260548,4.883374],[70.106178,29.698877]]; // [[S,W],[N,E]] — adjustable
 let vfrOverlay=null, vfrLoading=false, vfrLoadError=false;
+let vfrSWHandle=null, vfrNEHandle=null, vfrAdjust=false;
 
 function makeVfrTransparent(img){
   // draw the GIF to a canvas and knock out white/near-white pixels
@@ -445,26 +452,50 @@ function loadVfr(){
   vfrLoading=true;
   const img=new Image();
   img.crossOrigin='anonymous';
-  img.onload=()=>{
+  const finish=(src)=>{
     vfrLoading=false;
-    const url=makeVfrTransparent(img);
     const opacity=(+document.getElementById('vfrOpacity').value)/100;
-    if(url){
-      vfrOverlay=L.imageOverlay(url, VFR_BOUNDS, {opacity, interactive:false});
-    } else {
-      // CORS blocked pixel access — fall back to the raw GIF (white stays opaque)
-      vfrOverlay=L.imageOverlay(VFR_URL, VFR_BOUNDS, {opacity, interactive:false});
-    }
+    vfrOverlay=L.imageOverlay(src, vfrBounds, {opacity, interactive:false});
     if(document.getElementById('toggleVfr').checked) vfrOverlay.addTo(map);
+    if(vfrAdjust) showVfrHandles();
   };
-  img.onerror=()=>{
-    vfrLoading=false; vfrLoadError=true;
-    // last-resort: overlay the GIF directly by URL (no transparency)
-    const opacity=(+document.getElementById('vfrOpacity').value)/100;
-    vfrOverlay=L.imageOverlay(VFR_URL, VFR_BOUNDS, {opacity, interactive:false});
-    if(document.getElementById('toggleVfr').checked) vfrOverlay.addTo(map);
-  };
+  img.onload=()=>{ finish(makeVfrTransparent(img)||VFR_URL); };
+  img.onerror=()=>{ vfrLoadError=true; finish(VFR_URL); };
   img.src=VFR_URL;
+}
+
+/* ---- manual corner adjustment ---- */
+function cornerIcon(label){
+  return L.divIcon({className:'',
+    html:`<div class="vfr-handle">${label}</div>`, iconSize:[22,22], iconAnchor:[11,11]});
+}
+function applyVfrBounds(){
+  if(vfrOverlay) vfrOverlay.setBounds(L.latLngBounds(vfrBounds));
+  updateVfrReadout();
+}
+function showVfrHandles(){
+  const sw=vfrBounds[0], ne=vfrBounds[1];
+  if(!vfrSWHandle){
+    vfrSWHandle=L.marker([sw[0],sw[1]],{icon:cornerIcon('SW'),draggable:true,zIndexOffset:1000});
+    vfrSWHandle.on('drag',ev=>{ const p=ev.target.getLatLng(); vfrBounds[0]=[p.lat,p.lng]; applyVfrBounds(); });
+    vfrNEHandle=L.marker([ne[0],ne[1]],{icon:cornerIcon('NE'),draggable:true,zIndexOffset:1000});
+    vfrNEHandle.on('drag',ev=>{ const p=ev.target.getLatLng(); vfrBounds[1]=[p.lat,p.lng]; applyVfrBounds(); });
+  } else {
+    vfrSWHandle.setLatLng([sw[0],sw[1]]);
+    vfrNEHandle.setLatLng([ne[0],ne[1]]);
+  }
+  vfrSWHandle.addTo(map); vfrNEHandle.addTo(map);
+  updateVfrReadout();
+}
+function hideVfrHandles(){
+  if(vfrSWHandle) map.removeLayer(vfrSWHandle);
+  if(vfrNEHandle) map.removeLayer(vfrNEHandle);
+}
+function updateVfrReadout(){
+  const el=document.getElementById('vfrReadout');
+  if(!el) return;
+  const b=vfrBounds;
+  el.textContent=`[[${b[0][0].toFixed(6)},${b[0][1].toFixed(6)}],[${b[1][0].toFixed(6)},${b[1][1].toFixed(6)}]]`;
 }
 
 /* ---------------------------------------------------------------------------
@@ -775,12 +806,22 @@ document.getElementById('toggleVfr').onchange = e=>{
   document.getElementById('vfrOpacityRow').style.display = e.target.checked ? 'block' : 'none';
   if(e.target.checked){
     if(vfrOverlay) vfrOverlay.addTo(map); else loadVfr();
+    if(vfrAdjust) showVfrHandles();
   } else {
     if(vfrOverlay) map.removeLayer(vfrOverlay);
+    hideVfrHandles();
   }
 };
 document.getElementById('vfrOpacity').oninput = e=>{
   if(vfrOverlay) vfrOverlay.setOpacity((+e.target.value)/100);
+};
+document.getElementById('vfrAdjustChk').onchange = e=>{
+  vfrAdjust=e.target.checked;
+  if(vfrAdjust){ showVfrHandles(); } else { hideVfrHandles(); }
+};
+document.getElementById('vfrReadout').onclick = async e=>{
+  try{ await navigator.clipboard.writeText(e.target.textContent); e.target.style.color='var(--good)';
+    setTimeout(()=>e.target.style.color='var(--muted)',800); }catch(err){}
 };
 
 /* base map switcher */
