@@ -434,7 +434,16 @@ function setBase(kind){
 }
 
 /* ---- LFV VFR chart overlay with control-point (rubber-sheet) warp ---- */
-const VFR_URL='https://aro.lfv.se/tor/vfrkarta.gif?t='+Date.now();
+/* ---- VFR chart source ----
+   For testing the warp: upload vfrkarta.gif next to index.html on GitHub and set
+   VFR_LOCAL=true. Same-origin means no CORS taint, so the warp works with no proxy.
+   For the live LFV chart, set VFR_LOCAL=false (needs the CORS proxy for warping). */
+const VFR_LOCAL = true;                    // <-- true = use the uploaded local copy
+const VFR_LOCAL_FILE = 'vfrkarta.gif';     // relative path, same folder as index.html
+const VFR_REMOTE = 'https://aro.lfv.se/tor/vfrkarta.gif';
+const VFR_URL = VFR_LOCAL
+  ? VFR_LOCAL_FILE                          // no cache-buster: keeps it same-origin & simple
+  : VFR_REMOTE + '?t=' + Date.now();
 
 // Fallback rectangle bounds (used only before any control points exist)
 let vfrBounds=[[54.260548,4.883374],[70.106178,29.698877]]; // [[S,W],[N,E]]
@@ -627,11 +636,13 @@ function loadVfr(cb){
   if(vfrImg && vfrSrcCanvas){ if(cb)cb(); return; }
   if(vfrLoading) return;
   vfrLoading=true;
-  const useProxy=document.getElementById('vfrProxyChk')?.checked;
+  // When the GIF is local (same-origin), request CORS and skip the proxy entirely —
+  // the canvas won't taint, so the warp works directly.
+  const useProxy = !VFR_LOCAL && document.getElementById('vfrProxyChk')?.checked;
   const url = useProxy ? vfrProxied(VFR_URL) : VFR_URL;
 
   const img=new Image();
-  if(useProxy) img.crossOrigin='anonymous'; // proxy provides CORS; direct load must not request it
+  if(useProxy || VFR_LOCAL) img.crossOrigin='anonymous';
   img.onload=()=>{
     vfrLoading=false; vfrImg=img;
     const res=makeVfrCanvas(img);
