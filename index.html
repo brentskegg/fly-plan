@@ -213,6 +213,7 @@
       <label><input type="checkbox" id="toggleVfr"> <span class="sw" style="background:#9b59b6"></span> VFR chart (LFV)</label>
       <div id="vfrOpacityRow" style="display:none;padding:2px 0 4px 19px">
         <input type="range" id="vfrOpacity" min="0" max="100" value="70" style="width:100%;accent-color:var(--accent)">
+        <label style="flex-direction:row;gap:6px;margin-top:6px"><input type="checkbox" id="vfrProxyChk"> Use CORS proxy (enables warp)</label>
         <label style="flex-direction:row;gap:6px;margin-top:6px"><input type="checkbox" id="vfrAdjustChk"> Show/edit control points</label>
         <div style="display:flex;gap:6px;margin-top:6px">
           <button id="vfrAddCP" style="flex:1;background:var(--accent);border:1px solid var(--accent);color:#1a0f00;border-radius:6px;padding:5px;cursor:pointer;font-size:10px;font-weight:600">＋ Add point</button>
@@ -452,19 +453,21 @@ function vfrLoadCPs(){
   try{ const s=JSON.parse(localStorage.getItem('flyplan_vfr_cps')||'null'); if(Array.isArray(s)) vfrCPs=s; }catch(e){}
 }
 
-/* white -> transparent, returns {canvas,width,height} or null if CORS-tainted */
+/* white -> transparent. Returns {canvas, tainted}. If tainted (CORS), pixels
+   can't be read so white stays opaque AND the canvas can't be used to warp. */
 function makeVfrCanvas(img){
   const c=document.createElement('canvas');
   c.width=img.naturalWidth; c.height=img.naturalHeight;
   const ctx=c.getContext('2d');
   ctx.drawImage(img,0,0);
+  let tainted=false;
   try{
     const data=ctx.getImageData(0,0,c.width,c.height);
     const d=data.data, TH=235;
     for(let i=0;i<d.length;i+=4){ if(d[i]>=TH&&d[i+1]>=TH&&d[i+2]>=TH) d[i+3]=0; }
     ctx.putImageData(data,0,0);
-  }catch(e){ /* tainted: leave as-is, white stays opaque */ }
-  return c;
+  }catch(e){ tainted=true; }
+  return {canvas:c, tainted};
 }
 
 /* ---------- minimal Delaunay triangulation (Bowyer-Watson) ---------- */
@@ -595,31 +598,69 @@ const VfrWarpLayer = L.Layer.extend({
   }
 });
 
+// Optional CORS proxy — needed because LFV doesn't send CORS headers, so the
+// browser taints the canvas and neither the warp nor white-transparency can run.
+// corsproxy.io refetches the image WITH cors headers. Toggle in the UI.
+function vfrProxied(url){ return 'https://corsproxy.io/?url='+encodeURIComponent(url); }
+
+let vfrRawOverlay=null; // fallback plain overlay when canvas is unusable
+
+function seedDefaultCPs(){
+  if(vfrCPs.length!==0 || !vfrSrcCanvas) return;
+  const W=vfrSrcCanvas.width, H=vfrSrcCanvas.height;
+  vfrCPs=[
+    {x:0, y:H, lat:vfrBounds[0][0], lng:vfrBounds[0][1]},
+    {x:W, y:0, lat:vfrBounds[1][0], lng:vfrBounds[1][1]},
+    {x:0, y:0, lat:vfrBounds[1][0], lng:vfrBounds[0][1]},
+    {x:W, y:H, lat:vfrBounds[0][0], lng:vfrBounds[1][1]}
+  ];
+  vfrSaveCPs();
+}
+
 function loadVfr(cb){
-  if(vfrImg){ if(cb)cb(); return; }
+  if(vfrImg && vfrSrcCanvas){ if(cb)cb(); return; }
   if(vfrLoading) return;
   vfrLoading=true;
+  const useProxy=document.getElementById('vfrProxyChk')?.checked;
+  const url = useProxy ? vfrProxied(VFR_URL) : VFR_URL;
+
   const img=new Image();
-  img.crossOrigin='anonymous';
+  if(useProxy) img.crossOrigin='anonymous'; // proxy provides CORS; direct load must not request it
   img.onload=()=>{
-    vfrLoading=false;
-    vfrImg=img;
-    vfrSrcCanvas=makeVfrCanvas(img);
-    // seed default corner control points if none saved
-    if(vfrCPs.length===0){
-      const W=vfrSrcCanvas.width, H=vfrSrcCanvas.height;
-      vfrCPs=[
-        {x:0,   y:H,   lat:vfrBounds[0][0], lng:vfrBounds[0][1]}, // SW = bottom-left
-        {x:W,   y:0,   lat:vfrBounds[1][0], lng:vfrBounds[1][1]}, // NE = top-right
-        {x:0,   y:0,   lat:vfrBounds[1][0], lng:vfrBounds[0][1]}, // NW = top-left
-        {x:W,   y:H,   lat:vfrBounds[0][0], lng:vfrBounds[1][1]}  // SE = bottom-right
-      ];
-      vfrSaveCPs();
+    vfrLoading=false; vfrImg=img;
+    const res=makeVfrCanvas(img);
+    if(res.tainted){
+      // canvas unusable → warp & transparency impossible. Show raw overlay so it's not blank.
+      vfrSrcCanvas=null;
+      showRawVfr();
+      const s=document.getElementById('vfrReadout');
+      if(s) s.innerHTML='<span style="color:#ffb84d">Chart shown un-warped (no CORS). Tick “Use CORS proxy” to enable warping.</span>';
+    } else {
+      vfrSrcCanvas=res.canvas;
+      if(vfrRawOverlay){ map.removeLayer(vfrRawOverlay); vfrRawOverlay=null; }
+      seedDefaultCPs();
     }
     if(cb) cb();
   };
-  img.onerror=()=>{ vfrLoading=false; if(cb) cb(); };
-  img.src=VFR_URL;
+  img.onerror=()=>{
+    vfrLoading=false;
+    if(useProxy){
+      // proxy failed — last resort: plain non-CORS image, un-warped
+      const im2=new Image();
+      im2.onload=()=>{ vfrImg=im2; vfrSrcCanvas=null; showRawVfr(); if(cb)cb(); };
+      im2.onerror=()=>{ if(cb)cb(); };
+      im2.src=VFR_URL;
+    } else if(cb){ cb(); }
+  };
+  img.src=url;
+}
+
+// plain (un-warped) overlay fallback using Leaflet imageOverlay + rectangle bounds
+function showRawVfr(){
+  if(vfrRawOverlay) map.removeLayer(vfrRawOverlay);
+  const op=(+document.getElementById('vfrOpacity').value)/100;
+  vfrRawOverlay=L.imageOverlay(VFR_URL, vfrBounds, {opacity:op, interactive:false});
+  if(document.getElementById('toggleVfr').checked) vfrRawOverlay.addTo(map);
 }
 
 /* ---------- control-point editing ---------- */
@@ -627,12 +668,17 @@ let vfrCPMarkers=[];      // map markers for each CP (draggable)
 let vfrImgModal=null;     // the image-picker modal element
 
 function vfrShowLayer(){
+  if(!vfrSrcCanvas) return; // tainted: raw overlay is used instead
+  if(vfrRawOverlay){ map.removeLayer(vfrRawOverlay); vfrRawOverlay=null; }
   if(!vfrLayer) vfrLayer=new VfrWarpLayer();
   const op=(+document.getElementById('vfrOpacity').value)/100;
   vfrLayer.setOpacity(op);
   vfrLayer.addTo(map);
 }
-function vfrHideLayer(){ if(vfrLayer) map.removeLayer(vfrLayer); }
+function vfrHideLayer(){
+  if(vfrLayer) map.removeLayer(vfrLayer);
+  if(vfrRawOverlay) map.removeLayer(vfrRawOverlay);
+}
 
 function vfrRefresh(){ if(vfrLayer) vfrLayer.redraw(); }
 
@@ -1048,7 +1094,18 @@ document.getElementById('toggleVfr').onchange = e=>{
   }
 };
 document.getElementById('vfrOpacity').oninput = e=>{
-  if(vfrLayer) vfrLayer.setOpacity((+e.target.value)/100);
+  const op=(+e.target.value)/100;
+  if(vfrLayer) vfrLayer.setOpacity(op);
+  if(vfrRawOverlay) vfrRawOverlay.setOpacity(op);
+};
+document.getElementById('vfrProxyChk').onchange = ()=>{
+  // force a fresh reload through/without the proxy
+  vfrImg=null; vfrSrcCanvas=null;
+  if(vfrRawOverlay){ map.removeLayer(vfrRawOverlay); vfrRawOverlay=null; }
+  if(vfrLayer){ map.removeLayer(vfrLayer); }
+  if(document.getElementById('toggleVfr').checked){
+    loadVfr(()=>{ vfrShowLayer(); vfrRefresh(); if(vfrAdjust) showVfrHandles(); updateVfrReadout(); });
+  }
 };
 document.getElementById('vfrAdjustChk').onchange = e=>{
   vfrAdjust=e.target.checked;
