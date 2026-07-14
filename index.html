@@ -435,14 +435,16 @@ function setBase(kind){
 
 /* ---- LFV VFR chart overlay with control-point (rubber-sheet) warp ---- */
 /* ---- VFR chart source ----
-   For testing the warp: upload vfrkarta.gif next to index.html on GitHub and set
-   VFR_LOCAL=true. Same-origin means no CORS taint, so the warp works with no proxy.
-   For the live LFV chart, set VFR_LOCAL=false (needs the CORS proxy for warping). */
-const VFR_LOCAL = true;                    // <-- true = use the uploaded local copy
+   The warp/control-point editing needs to READ the image's pixels on a canvas.
+   LFV's server sends no CORS headers, so a direct load taints the canvas and
+   editing is disabled (you'll see the chart, but "Add point" won't work).
+   FIX: upload vfrkarta.gif next to index.html on GitHub and set VFR_LOCAL=true.
+   Same-origin => no taint => warp + white-transparency work with no proxy. */
+const VFR_LOCAL = true;                    // true = use the uploaded local copy
 const VFR_LOCAL_FILE = 'vfrkarta.gif';     // relative path, same folder as index.html
 const VFR_REMOTE = 'https://aro.lfv.se/tor/vfrkarta.gif';
 const VFR_URL = VFR_LOCAL
-  ? VFR_LOCAL_FILE                          // no cache-buster: keeps it same-origin & simple
+  ? VFR_LOCAL_FILE
   : VFR_REMOTE + '?t=' + Date.now();
 
 // Fallback rectangle bounds (used only before any control points exist)
@@ -620,15 +622,32 @@ function vfrProxied(url){ return VFR_PROXIES[vfrProxyIdx](url); }
 
 let vfrRawOverlay=null; // fallback plain overlay when canvas is unusable
 
+// Build an N×N grid of control points evenly spaced across the image, each mapped
+// to the matching lat/lng from the rectangle bounds. Image y is top-down, so
+// row 0 (y=0) is the north edge (max lat) and the last row is south (min lat).
+function vfrGridCPs(n){
+  const W=vfrSrcCanvas.width, H=vfrSrcCanvas.height;
+  const south=vfrBounds[0][0], west=vfrBounds[0][1];
+  const north=vfrBounds[1][0], east=vfrBounds[1][1];
+  const cps=[];
+  for(let r=0;r<n;r++){
+    const fy=r/(n-1);              // 0 at top .. 1 at bottom
+    for(let c=0;c<n;c++){
+      const fx=c/(n-1);           // 0 at left .. 1 at right
+      cps.push({
+        x: fx*W,
+        y: fy*H,
+        lat: north + fy*(south-north),  // north at top, south at bottom
+        lng: west  + fx*(east-west)
+      });
+    }
+  }
+  return cps;
+}
+
 function seedDefaultCPs(){
   if(vfrCPs.length!==0 || !vfrSrcCanvas) return;
-  const W=vfrSrcCanvas.width, H=vfrSrcCanvas.height;
-  vfrCPs=[
-    {x:0, y:H, lat:vfrBounds[0][0], lng:vfrBounds[0][1]},
-    {x:W, y:0, lat:vfrBounds[1][0], lng:vfrBounds[1][1]},
-    {x:0, y:0, lat:vfrBounds[1][0], lng:vfrBounds[0][1]},
-    {x:W, y:H, lat:vfrBounds[0][0], lng:vfrBounds[1][1]}
-  ];
+  vfrCPs=vfrGridCPs(5);
   vfrSaveCPs();
 }
 
@@ -636,13 +655,11 @@ function loadVfr(cb){
   if(vfrImg && vfrSrcCanvas){ if(cb)cb(); return; }
   if(vfrLoading) return;
   vfrLoading=true;
-  // When the GIF is local (same-origin), request CORS and skip the proxy entirely —
-  // the canvas won't taint, so the warp works directly.
   const useProxy = !VFR_LOCAL && document.getElementById('vfrProxyChk')?.checked;
   const url = useProxy ? vfrProxied(VFR_URL) : VFR_URL;
 
   const img=new Image();
-  if(useProxy || VFR_LOCAL) img.crossOrigin='anonymous';
+  if(useProxy || VFR_LOCAL) img.crossOrigin='anonymous'; // local is same-origin; proxy adds CORS
   img.onload=()=>{
     vfrLoading=false; vfrImg=img;
     const res=makeVfrCanvas(img);
@@ -792,18 +809,9 @@ function updateVfrReadout(){
   el.textContent=vfrCPs.length+' control points';
 }
 function vfrResetCPs(){
-  if(!confirm('Reset all control points to the default corners?')) return;
+  if(!confirm('Reset all control points to an even 5×5 grid?')) return;
   vfrCPs=[]; localStorage.removeItem('flyplan_vfr_cps');
-  if(vfrSrcCanvas){
-    const W=vfrSrcCanvas.width,H=vfrSrcCanvas.height;
-    vfrCPs=[
-      {x:0,y:H,lat:vfrBounds[0][0],lng:vfrBounds[0][1]},
-      {x:W,y:0,lat:vfrBounds[1][0],lng:vfrBounds[1][1]},
-      {x:0,y:0,lat:vfrBounds[1][0],lng:vfrBounds[0][1]},
-      {x:W,y:H,lat:vfrBounds[0][0],lng:vfrBounds[1][1]}
-    ];
-    vfrSaveCPs();
-  }
+  if(vfrSrcCanvas){ vfrCPs=vfrGridCPs(5); vfrSaveCPs(); }
   showVfrHandles(); vfrRefresh(); updateVfrReadout();
 }
 vfrLoadCPs();
