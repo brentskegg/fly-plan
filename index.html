@@ -190,7 +190,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="brand"><b>FLY-PLAN</b><span>VFR&nbsp;Route&nbsp;Planner</span><span class="ver" id="buildVer">build&nbsp;2026.07.15&nbsp;·&nbsp;2</span></div>
+    <div class="brand"><b>FLY-PLAN</b><span>VFR&nbsp;Route&nbsp;Planner</span><span class="ver" id="buildVer">build&nbsp;2026.07.15&nbsp;·&nbsp;3</span></div>
     <div class="spacer"></div>
     <div class="hint">Click to add · drag the route line to insert a point · drag a waypoint to move · double-click to remove · hover to inspect</div>
   </header>
@@ -619,6 +619,9 @@ const VfrWarpLayer = L.Layer.extend({
 // canvas and the warp/transparency can't read pixels. These proxies refetch the
 // image server-side and return it WITH cors headers. corsproxy.io was dropped:
 // its free tier is localhost-only and blocks image content types.
+// Only proxies verified to serve images with CORS headers. Public proxies are
+// unreliable by nature (rate limits, 502/522 stalls) — each gets a short timeout
+// and we fall through to the next, then to an un-warped chart.
 const VFR_PROXIES=[
   u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u),
   u=>'https://api.codetabs.com/v1/proxy/?quest='+encodeURIComponent(u)
@@ -660,6 +663,11 @@ function seedDefaultCPs(){
   vfrSaveCPs();
 }
 
+function vfrStatus(msg,color){
+  const s=document.getElementById('vfrReadout');
+  if(s) s.innerHTML=color?`<span style="color:${color}">${msg}</span>`:msg;
+}
+
 function loadVfr(cb){
   if(vfrImg && vfrSrcCanvas){ if(cb)cb(); return; }
   if(vfrLoading) return;
@@ -667,44 +675,59 @@ function loadVfr(cb){
   const useProxy = !VFR_LOCAL && document.getElementById('vfrProxyChk')?.checked;
   const url = useProxy ? vfrProxied(VFR_URL) : VFR_URL;
 
+  if(useProxy) vfrStatus(`Trying proxy ${vfrProxyIdx+1}/${VFR_PROXIES.length}…`,'#7fa3bd');
+
   const img=new Image();
   if(useProxy || VFR_LOCAL) img.crossOrigin='anonymous'; // local is same-origin; proxy adds CORS
-  img.onload=()=>{
+
+  // Public proxies often hang or return 502/522 after a long stall. Don't wait
+  // forever — give each one a short budget, then move on.
+  let done=false;
+  const TIMEOUT_MS=8000;
+  const timer=setTimeout(()=>{
+    if(done) return;
+    done=true;
+    img.src='';               // abort the pending request
+    handleFailure('timeout');
+  }, TIMEOUT_MS);
+
+  function finishOk(){
+    if(done) return; done=true; clearTimeout(timer);
     vfrLoading=false; vfrImg=img;
     const res=makeVfrCanvas(img);
     if(res.tainted){
-      // canvas unusable → warp & transparency impossible. Show raw overlay so it's not blank.
       vfrSrcCanvas=null;
       showRawVfr();
-      const s=document.getElementById('vfrReadout');
-      if(s) s.innerHTML='<span style="color:#ffb84d">Chart shown un-warped (no CORS). Tick “Use CORS proxy” to enable warping.</span>';
+      vfrStatus('Chart shown un-warped (no CORS).','#ffb84d');
     } else {
       vfrSrcCanvas=res.canvas;
       if(vfrRawOverlay){ map.removeLayer(vfrRawOverlay); vfrRawOverlay=null; }
       seedDefaultCPs();
+      vfrStatus(vfrCPs.length+' control points','');
     }
     if(cb) cb();
-  };
-  img.onerror=()=>{
+  }
+
+  function handleFailure(why){
     vfrLoading=false;
     if(useProxy && vfrProxyIdx < VFR_PROXIES.length-1){
-      // this proxy failed — try the next one
-      vfrProxyIdx++;
+      vfrProxyIdx++;                       // next proxy in the chain
       loadVfr(cb);
       return;
     }
     if(useProxy){
-      // all proxies failed — last resort: plain non-CORS image, un-warped
-      vfrProxyIdx=0;
+      vfrProxyIdx=0;                       // exhausted — fall back to un-warped
       const im2=new Image();
       im2.onload=()=>{ vfrImg=im2; vfrSrcCanvas=null; showRawVfr();
-        const s=document.getElementById('vfrReadout');
-        if(s) s.innerHTML='<span style="color:#ff5a5a">Proxies unavailable — chart shown un-warped.</span>';
+        vfrStatus('All proxies failed ('+why+') — chart un-warped.','#ff5a5a');
         if(cb)cb(); };
-      im2.onerror=()=>{ if(cb)cb(); };
+      im2.onerror=()=>{ vfrStatus('Chart failed to load.','#ff5a5a'); if(cb)cb(); };
       im2.src=VFR_URL;
     } else if(cb){ cb(); }
-  };
+  }
+
+  img.onload=finishOk;
+  img.onerror=()=>{ if(!done){ done=true; clearTimeout(timer); handleFailure('error'); } };
   img.src=url;
 }
 
