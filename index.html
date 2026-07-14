@@ -647,7 +647,7 @@ function vfrGridCPs(n){
 
 function seedDefaultCPs(){
   if(vfrCPs.length!==0 || !vfrSrcCanvas) return;
-  vfrCPs=vfrGridCPs(5);
+  vfrCPs=vfrGridCPs(9);
   vfrSaveCPs();
 }
 
@@ -809,9 +809,9 @@ function updateVfrReadout(){
   el.textContent=vfrCPs.length+' control points';
 }
 function vfrResetCPs(){
-  if(!confirm('Reset all control points to an even 5×5 grid?')) return;
+  if(!confirm('Reset all control points to an even 9×9 grid?')) return;
   vfrCPs=[]; localStorage.removeItem('flyplan_vfr_cps');
-  if(vfrSrcCanvas){ vfrCPs=vfrGridCPs(5); vfrSaveCPs(); }
+  if(vfrSrcCanvas){ vfrCPs=vfrGridCPs(9); vfrSaveCPs(); }
   showVfrHandles(); vfrRefresh(); updateVfrReadout();
 }
 vfrLoadCPs();
