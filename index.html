@@ -22,6 +22,8 @@
   header .brand{display:flex;align-items:baseline;gap:10px}
   header .brand b{font-weight:800;letter-spacing:.5px;font-size:15px}
   header .brand span{font-family:var(--mono);font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:2px}
+  header .brand .ver{font-size:10px;letter-spacing:1px;color:var(--accent-2);text-transform:none;
+    background:var(--panel-2);border:1px solid var(--line);border-radius:4px;padding:2px 6px;margin-left:2px}
   header .spacer{flex:1}
   header .hint{font-family:var(--mono);font-size:11px;color:var(--muted)}
   header .hint b{color:var(--accent-2)}
@@ -185,7 +187,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="brand"><b>FLY-PLAN</b><span>VFR&nbsp;Route&nbsp;Planner</span></div>
+    <div class="brand"><b>FLY-PLAN</b><span>VFR&nbsp;Route&nbsp;Planner</span><span class="ver" id="buildVer">build&nbsp;2026.07.15&nbsp;·&nbsp;1</span></div>
     <div class="spacer"></div>
     <div class="hint">Click to add · drag the route line to insert a point · drag a waypoint to move · double-click to remove · hover to inspect</div>
   </header>
@@ -440,7 +442,7 @@ function setBase(kind){
    editing is disabled (you'll see the chart, but "Add point" won't work).
    FIX: upload vfrkarta.gif next to index.html on GitHub and set VFR_LOCAL=true.
    Same-origin => no taint => warp + white-transparency work with no proxy. */
-const VFR_LOCAL = true;                    // true = use the uploaded local copy
+const VFR_LOCAL = false;                    // true = use the uploaded local copy
 const VFR_LOCAL_FILE = 'vfrkarta.gif';     // relative path, same folder as index.html
 const VFR_REMOTE = 'https://aro.lfv.se/tor/vfrkarta.gif';
 const VFR_URL = VFR_LOCAL
@@ -1119,6 +1121,7 @@ map.on('mousemove', e=>{
 map.on('mouseout', ()=>{ hoverbox.style.display='none'; });
 
 
+document.getElementById('toggleAirspace').onchange = e=>{ showAirspace=e.target.checked; renderAirspace(); };
 document.getElementById('toggleAirports').onchange = e=>{ showAirports=e.target.checked; renderAirports(); };
 document.getElementById('toggleNavaids').onchange  = e=>{ showNavaids=e.target.checked; renderNavaids(); };
 document.getElementById('toggleRpp').onchange = e=>{ showRpp=e.target.checked; renderReporting(); };
