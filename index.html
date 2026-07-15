@@ -190,7 +190,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="brand"><b>FLY-PLAN</b><span>VFR&nbsp;Route&nbsp;Planner</span><span class="ver" id="buildVer">build&nbsp;2026.07.15&nbsp;·&nbsp;3</span></div>
+    <div class="brand"><b>FLY-PLAN</b><span>VFR&nbsp;Route&nbsp;Planner</span><span class="ver" id="buildVer">build&nbsp;2026.07.15&nbsp;·&nbsp;5</span></div>
     <div class="spacer"></div>
     <div class="hint">Click to add · drag the route line to insert a point · drag a waypoint to move · double-click to remove · hover to inspect</div>
   </header>
@@ -441,17 +441,27 @@ function setBase(kind){
 
 /* ---- LFV VFR chart overlay with control-point (rubber-sheet) warp ---- */
 /* ---- VFR chart source ----
-   The warp/control-point editing needs to READ the image's pixels on a canvas.
-   LFV's server sends no CORS headers, so a direct load taints the canvas and
-   editing is disabled (you'll see the chart, but "Add point" won't work).
-   FIX: upload vfrkarta.gif next to index.html on GitHub and set VFR_LOCAL=true.
-   Same-origin => no taint => warp + white-transparency work with no proxy. */
-const VFR_LOCAL = false;                    // true = use the uploaded local copy
+   The warp needs to READ the image's pixels on a canvas, which the browser only
+   permits if the server sends an Access-Control-Allow-Origin header. LFV doesn't,
+   so a direct load taints the canvas and the warp is impossible.
+
+   Three ways to get readable pixels, in order of preference:
+   1) VFR_WORKER  — your own Cloudflare Worker re-serves the live chart WITH the
+                    CORS header. Live + warped + reliable. See vfr-proxy-worker.js.
+   2) VFR_LOCAL   — a copy of the GIF in this repo (same-origin, no CORS needed).
+                    Rock solid, but only as fresh as your last upload.
+   3) public proxy— the "Use CORS proxy" checkbox. Free, but rate-limited/flaky. */
+
+// Paste your deployed Worker URL here, e.g. 'https://vfr-proxy.you.workers.dev'
+// Leave '' to fall back to VFR_LOCAL / public proxies.
+const VFR_WORKER = 'https://vfrkarta-proxy.brentskegg.workers.dev';
+
+const VFR_LOCAL = false;                   // true = use the uploaded local copy
 const VFR_LOCAL_FILE = 'vfrkarta.gif';     // relative path, same folder as index.html
 const VFR_REMOTE = 'https://aro.lfv.se/tor/vfrkarta.gif';
-const VFR_URL = VFR_LOCAL
-  ? VFR_LOCAL_FILE
-  : VFR_REMOTE + '?t=' + Date.now();
+const VFR_URL = VFR_WORKER
+  ? VFR_WORKER + '?t=' + Date.now()        // your proxy: live + CORS-enabled
+  : (VFR_LOCAL ? VFR_LOCAL_FILE : VFR_REMOTE + '?t=' + Date.now());
 
 // Fallback rectangle bounds (used only before any control points exist)
 let vfrBounds=[[54.260548,4.883374],[70.106178,29.698877]]; // [[S,W],[N,E]]
@@ -672,13 +682,15 @@ function loadVfr(cb){
   if(vfrImg && vfrSrcCanvas){ if(cb)cb(); return; }
   if(vfrLoading) return;
   vfrLoading=true;
-  const useProxy = !VFR_LOCAL && document.getElementById('vfrProxyChk')?.checked;
+  // Your own Worker (or a same-origin local copy) already gives readable pixels,
+  // so the public-proxy path is only for the fallback case.
+  const useProxy = !VFR_WORKER && !VFR_LOCAL && document.getElementById('vfrProxyChk')?.checked;
   const url = useProxy ? vfrProxied(VFR_URL) : VFR_URL;
 
   if(useProxy) vfrStatus(`Trying proxy ${vfrProxyIdx+1}/${VFR_PROXIES.length}…`,'#7fa3bd');
 
   const img=new Image();
-  if(useProxy || VFR_LOCAL) img.crossOrigin='anonymous'; // local is same-origin; proxy adds CORS
+  if(useProxy || VFR_LOCAL || VFR_WORKER) img.crossOrigin='anonymous';
 
   // Public proxies often hang or return 502/522 after a long stall. Don't wait
   // forever — give each one a short budget, then move on.
